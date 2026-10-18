@@ -74,6 +74,8 @@ def main():
     ap.add_argument("--data-path", default="data/TinyStories-valid.txt")
     ap.add_argument("--max-stories", type=int, default=None)
     ap.add_argument("--vocab-size", type=int, default=4000)
+    ap.add_argument("--device", default="auto",
+                    help="'auto', 'cuda', or 'cpu'")
     args = ap.parse_args()
 
     random.seed(args.seed)
@@ -105,9 +107,15 @@ def main():
                           weights_only=False)
         model.load_state_dict(ckpt["state_dict"])
         print(f"initialized weights from {args.init_ckpt} (fresh run)")
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
+    model.to(device)
+    print(f"device: {device}")
     print(f"params: {model.n_params():,}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    gen = torch.Generator().manual_seed(args.seed)
+    gen = torch.Generator(device=device).manual_seed(args.seed)
 
     def save():
         os.makedirs(args.ckpt, exist_ok=True)
@@ -135,6 +143,7 @@ def main():
         except StopIteration:
             batches = iter(loader)
             (batch,) = next(batches)
+        batch = batch.to(device)
         loss = diffusion_loss(model, batch, tok, generator=gen)
         opt.zero_grad()
         loss.backward()

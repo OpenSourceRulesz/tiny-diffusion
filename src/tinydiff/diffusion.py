@@ -54,6 +54,8 @@ def generate(model, tok, prompt_ids, gen_len=64, steps=24, temperature=1.0,
     """
     g = torch.Generator().manual_seed(seed)
     device = next(model.parameters()).device
+    if device.type != "cpu":
+        g = torch.Generator(device=device).manual_seed(seed)
     P = len(prompt_ids)
     seq = torch.full((1, P + gen_len), tok.pad_id, dtype=torch.long, device=device)
     seq[0, :P] = torch.tensor(prompt_ids, device=device)
