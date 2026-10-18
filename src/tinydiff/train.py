@@ -14,6 +14,39 @@ from .model import TinyDiffusionLM
 from .tokenizer import WordTokenizer
 
 
+def load_stories(path, max_stories=None):
+    with open(path, encoding="utf-8") as f:
+        raw = f.read()
+    stories = [s.strip() for s in raw.split("<|endoftext|>") if s.strip()]
+    if max_stories:
+        stories = stories[:max_stories]
+    return stories
+
+
+def get_texts_and_tokenizer(args):
+    if args.data == "synthetic":
+        texts = make_dataset(n_tool=args.n_tool, n_lang=args.n_lang,
+                             seed=args.seed, hi=args.hi)
+        if args.tokenizer:
+            tok = WordTokenizer.load(args.tokenizer)
+        else:
+            tok = WordTokenizer.build(texts, vocab_size=args.vocab_size)
+    elif args.data == "tinystories":
+        stories = load_stories(args.data_path, args.max_stories)
+        # mix in tool trajectories so tool markup/words are in vocab
+        tool_texts = make_dataset(n_tool=2000, n_lang=0, seed=args.seed, hi=args.hi)
+        if args.tokenizer:
+            tok = WordTokenizer.load(args.tokenizer)
+        else:
+            tok = WordTokenizer.build(stories + tool_texts,
+                                      vocab_size=args.vocab_size)
+        texts = stories
+        print(f"loaded {len(stories)} stories")
+    else:
+        raise ValueError(args.data)
+    return texts, tok
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", type=int, default=600)
@@ -33,15 +66,21 @@ def main():
                     help="checkpoint every N steps so restarts don't lose progress")
     ap.add_argument("--resume", default=None,
                     help="checkpoint dir to resume from (continues step count)")
+    ap.add_argument("--init-ckpt", default=None,
+                    help="checkpoint dir to initialize weights from (fresh run, e.g. finetune)")
+    ap.add_argument("--tokenizer", default=None,
+                    help="tokenizer.json to use instead of building one")
+    ap.add_argument("--data", default="synthetic", choices=["synthetic", "tinystories"])
+    ap.add_argument("--data-path", default="data/TinyStories-valid.txt")
+    ap.add_argument("--max-stories", type=int, default=None)
+    ap.add_argument("--vocab-size", type=int, default=4000)
     args = ap.parse_args()
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    print("generating synthetic data...")
-    texts = make_dataset(n_tool=args.n_tool, n_lang=args.n_lang, seed=args.seed,
-                         hi=args.hi)
-    tok = WordTokenizer.build(texts)
+    print("loading data...")
+    texts, tok = get_texts_and_tokenizer(args)
     print(f"vocab size: {len(tok)}")
 
     encoded = [tok.encode(t)[:args.max_len] for t in texts]
@@ -61,6 +100,11 @@ def main():
         with open(f"{args.resume}/meta.json") as f:
             start_step = json.load(f).get("step", 0)
         print(f"resumed from {args.resume} at step {start_step}")
+    elif args.init_ckpt:
+        ckpt = torch.load(f"{args.init_ckpt}/model.pt", map_location="cpu",
+                          weights_only=False)
+        model.load_state_dict(ckpt["state_dict"])
+        print(f"initialized weights from {args.init_ckpt} (fresh run)")
     print(f"params: {model.n_params():,}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
     gen = torch.Generator().manual_seed(args.seed)

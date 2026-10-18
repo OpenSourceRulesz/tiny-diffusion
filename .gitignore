@@ -6,3 +6,4 @@ __pycache__/
 train_*.log
 *.log
 .ipynb_checkpoints/
+data/*.txt
