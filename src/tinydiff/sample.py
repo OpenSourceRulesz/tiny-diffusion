@@ -34,7 +34,9 @@ def default_struct_ids(tok):
 def tool_loop(model, tok, prompt_text, block_len=40, answer_len=16, steps=16,
               max_rounds=5, temperature=0.8, seed=0,
               phase1_steps=0, struct_ids=None, struct_min_conf=0.0, traces=None,
-              struct_bonus=0.0, struct_bonus_steps=0):
+              struct_bonus=0.0, struct_bonus_steps=0,
+              copy_bonus=0.0, copy_answer=True, copy_call=False,
+              question_text=""):
     """Frozen-block agentic loop.
 
     Each round: freeze everything generated so far (prompt + finished blocks),
@@ -45,6 +47,10 @@ def tool_loop(model, tok, prompt_text, block_len=40, answer_len=16, steps=16,
 
     With traces set to a list, each round appends its block's unmask log:
     a list of (step, position, token_id) events.
+
+    With copy_bonus > 0: copy-gated decoding. The answer block (after a tool
+    result) boosts tokens from the result span; with copy_call, the call block
+    boosts tokens from the question (fixes digit corruption like 9322->9922).
     """
     seq_ids = tok.encode(prompt_text)
     call_stop = tok.stoi["[/CALL]"]
@@ -53,6 +59,8 @@ def tool_loop(model, tok, prompt_text, block_len=40, answer_len=16, steps=16,
     end_stop = tok.stoi.get("[END]")
     transcript = []
     just_answered_tool = False
+    last_result = ""
+    q_copy_ids = set(tok.encode(question_text)) if question_text else set()
     for r in range(max_rounds):
         # the answer after a tool result only needs a few tokens; a long block
         # invites rambling past the answer. It ends at [END], which the model
@@ -64,13 +72,20 @@ def tool_loop(model, tok, prompt_text, block_len=40, answer_len=16, steps=16,
         # stop the block the moment [/CALL] is unmasked: the environment owns
         # [RESULT], so anything the model would hallucinate after [/CALL] is cut.
         blog = [] if traces is not None else None
+        if just_answered_tool and copy_answer and last_result:
+            cur_copy_ids = set(tok.encode(last_result))
+        elif not just_answered_tool and copy_call:
+            cur_copy_ids = q_copy_ids
+        else:
+            cur_copy_ids = set()
         gen_ids = generate(model, tok, seq_ids, gen_len=blen, steps=steps,
                            temperature=temperature, seed=seed + r, stop_on=stop_id,
                            phase1_steps=phase1_steps,
                            struct_ids=struct_ids or (),
                            struct_min_conf=struct_min_conf, log=blog,
                            struct_bonus=struct_bonus,
-                           struct_bonus_steps=struct_bonus_steps)
+                           struct_bonus_steps=struct_bonus_steps,
+                           copy_ids=cur_copy_ids, copy_bonus=copy_bonus)
         if traces is not None:
             traces.append(blog)
         new_text = tok.decode(gen_ids[len(seq_ids):])
@@ -84,6 +99,7 @@ def tool_loop(model, tok, prompt_text, block_len=40, answer_len=16, steps=16,
         transcript.append(("tool", f"{m.group(1).strip()}  =>  {result}"))
         seq_ids = seq_ids + tok.encode(f" [RESULT] {result} [/RESULT]")
         just_answered_tool = True
+        last_result = result
     return tok.decode(seq_ids), transcript
 
 

@@ -50,6 +50,14 @@ def main():
                          "the first --struct-bonus-steps steps (ordering nudge "
                          "only; do not combine with --two-phase)")
     ap.add_argument("--struct-bonus-steps", type=int, default=8)
+    ap.add_argument("--copy-bonus", type=float, default=0.0,
+                    help="copy-gated decoding: logit bonus for tokens from the "
+                         "copy source (result span for answer blocks)")
+    ap.add_argument("--copy-answer", action="store_true",
+                    help="boost result-span tokens in the answer block")
+    ap.add_argument("--copy-call", action="store_true",
+                    help="boost question tokens in the call block (fights "
+                         "digit corruption like 9322->9922)")
     args = ap.parse_args()
 
     model, tok = load_ckpt(args.ckpt)
@@ -63,7 +71,9 @@ def main():
             phase1_steps=args.phase1_steps if args.two_phase else 0,
             struct_ids=struct_ids, struct_min_conf=args.struct_min_conf,
             struct_bonus=args.struct_bonus,
-            struct_bonus_steps=args.struct_bonus_steps)
+            struct_bonus_steps=args.struct_bonus_steps,
+            copy_bonus=args.copy_bonus, copy_answer=args.copy_answer,
+            copy_call=args.copy_call, question_text=q)
         calls = [t for role, t in transcript if role == "tool"]
         v = bool(calls) and "unknown" not in calls[0] and "error" not in calls[0]
         t_ok = v and calls[0].split()[0] == exp_tool

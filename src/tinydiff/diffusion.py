@@ -46,7 +46,8 @@ def _top_p_filter(logits, top_p):
 def generate(model, tok, prompt_ids, gen_len=64, steps=24, temperature=1.0,
              top_p=0.9, seed=0, frames=False, stop_on=None,
              phase1_steps=0, struct_ids=(), struct_min_conf=0.0, log=None,
-             struct_bonus=0.0, struct_bonus_steps=0):
+             struct_bonus=0.0, struct_bonus_steps=0,
+             copy_ids=(), copy_bonus=0.0):
     """Denoise a response block conditioned on a frozen prompt.
 
     Returns the full id list (prompt + generated). With frames=True, also returns
@@ -69,6 +70,11 @@ def generate(model, tok, prompt_ids, gen_len=64, steps=24, temperature=1.0,
     structural token get struct_bonus added to their selection confidence.
     Pure ordering nudge — sampling stays unrestricted and nothing is frozen
     ahead of schedule. (Do not combine with phase1_steps.)
+
+    With copy_bonus > 0 and copy_ids non-empty: copy-gated decoding. A fixed
+    logit bonus is added to every token in copy_ids (the copy source, e.g.
+    the frozen [RESULT] span for an answer block) at each denoising step —
+    the decoding-time analogue of a pointer-generator's copy distribution.
     """
     g = torch.Generator().manual_seed(seed)
     device = next(model.parameters()).device
@@ -83,6 +89,8 @@ def generate(model, tok, prompt_ids, gen_len=64, steps=24, temperature=1.0,
     struct_set = set(struct_ids)
     sids = torch.tensor(sorted(struct_set), dtype=torch.long, device=device) \
         if struct_set else None
+    copy_list = sorted(set(copy_ids))
+    do_copy = bool(copy_bonus and copy_list)
 
     def _finish_step(idx):
         frozen[0, idx] = True
@@ -98,6 +106,8 @@ def generate(model, tok, prompt_ids, gen_len=64, steps=24, temperature=1.0,
     snapshots = []
     for i in range(steps):
         logits = model(seq, pad_mask=(seq == tok.pad_id))[0] / max(temperature, 1e-6)
+        if do_copy:
+            logits[:, copy_list] += copy_bonus
         logits = _top_p_filter(logits, top_p)
         probs = torch.softmax(logits, dim=-1)
         conf, pred = probs.max(dim=-1)
@@ -154,6 +164,8 @@ def generate(model, tok, prompt_ids, gen_len=64, steps=24, temperature=1.0,
     leftover = (seq[0] == tok.mask_id).nonzero(as_tuple=True)[0]
     if len(leftover):
         logits = model(seq, pad_mask=(seq == tok.pad_id))[0]
+        if do_copy:
+            logits[:, copy_list] += copy_bonus
         logits[:, tok.mask_id] = float("-inf")
         fill = logits[leftover].argmax(dim=-1)
         seq[0, leftover] = fill
