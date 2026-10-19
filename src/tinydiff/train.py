@@ -1,6 +1,7 @@
 """Smoke-train the tiny diffusion LM on synthetic tool trajectories."""
 
 import argparse
+import itertools
 import json
 import os
 import random
@@ -14,16 +15,34 @@ from .model import TinyDiffusionLM
 from .tokenizer import WordTokenizer
 
 
-def load_stories(path, max_stories=None):
+def iter_stories(path, max_stories=None):
+    """Yield stories one at a time; never holds the whole file in RAM."""
+    buf = []
+    n = 0
     with open(path, encoding="utf-8") as f:
-        raw = f.read()
-    stories = [s.strip() for s in raw.split("<|endoftext|>") if s.strip()]
-    if max_stories:
-        stories = stories[:max_stories]
-    return stories
+        for line in f:
+            if "<|endoftext|>" in line:
+                s = "".join(buf).strip()
+                buf = []
+                if s:
+                    yield s
+                    n += 1
+                    if max_stories and n >= max_stories:
+                        return
+            else:
+                buf.append(line)
 
 
-def get_texts_and_tokenizer(args):
+def count_stories(path):
+    n = 0
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if "<|endoftext|>" in line:
+                n += 1
+    return n
+
+
+def get_data_and_tokenizer(args):
     if args.data == "synthetic":
         texts = make_dataset(n_tool=args.n_tool, n_lang=args.n_lang,
                              seed=args.seed, hi=args.hi)
@@ -31,20 +50,37 @@ def get_texts_and_tokenizer(args):
             tok = WordTokenizer.load(args.tokenizer)
         else:
             tok = WordTokenizer.build(texts, vocab_size=args.vocab_size)
+        encoded = [tok.encode(t)[:args.max_len] for t in texts]
+        max_t = max(len(e) for e in encoded)
+        ids = torch.full((len(encoded), max_t), tok.pad_id, dtype=torch.long)
+        for i, e in enumerate(encoded):
+            ids[i, :len(e)] = torch.tensor(e)
+        return ids, tok
     elif args.data == "tinystories":
-        stories = load_stories(args.data_path, args.max_stories)
         # mix in tool trajectories so tool markup/words are in vocab
         tool_texts = make_dataset(n_tool=2000, n_lang=0, seed=args.seed, hi=args.hi)
         if args.tokenizer:
             tok = WordTokenizer.load(args.tokenizer)
         else:
-            tok = WordTokenizer.build(stories + tool_texts,
+            sample = list(itertools.islice(iter_stories(args.data_path),
+                                           args.vocab_stories))
+            print(f"building vocab from {len(sample)} stories...")
+            tok = WordTokenizer.build(sample + tool_texts,
                                       vocab_size=args.vocab_size)
-        texts = stories
-        print(f"loaded {len(stories)} stories")
+            del sample
+        n = args.max_stories or count_stories(args.data_path)
+        ids = torch.full((n, args.max_len), tok.pad_id, dtype=torch.long)
+        i = 0
+        for s in iter_stories(args.data_path, args.max_stories):
+            if i >= n:
+                break
+            e = tok.encode(s)[:args.max_len]
+            ids[i, :len(e)] = torch.tensor(e)
+            i += 1
+        print(f"loaded {i} stories -> tensor {tuple(ids.shape)}")
+        return ids, tok
     else:
         raise ValueError(args.data)
-    return texts, tok
 
 
 def main():
@@ -73,6 +109,8 @@ def main():
     ap.add_argument("--data", default="synthetic", choices=["synthetic", "tinystories"])
     ap.add_argument("--data-path", default="data/TinyStories-valid.txt")
     ap.add_argument("--max-stories", type=int, default=None)
+    ap.add_argument("--vocab-stories", type=int, default=200000,
+                    help="stories used for vocab build (streamed, not all)")
     ap.add_argument("--vocab-size", type=int, default=4000)
     ap.add_argument("--device", default="auto",
                     help="'auto', 'cuda', or 'cpu'")
@@ -82,14 +120,8 @@ def main():
     torch.manual_seed(args.seed)
 
     print("loading data...")
-    texts, tok = get_texts_and_tokenizer(args)
+    ids, tok = get_data_and_tokenizer(args)
     print(f"vocab size: {len(tok)}")
-
-    encoded = [tok.encode(t)[:args.max_len] for t in texts]
-    max_t = max(len(e) for e in encoded)
-    ids = torch.full((len(encoded), max_t), tok.pad_id, dtype=torch.long)
-    for i, e in enumerate(encoded):
-        ids[i, :len(e)] = torch.tensor(e)
 
     loader = DataLoader(TensorDataset(ids), batch_size=args.batch, shuffle=True)
     model = TinyDiffusionLM(len(tok), d_model=args.d_model, n_layers=args.layers,
