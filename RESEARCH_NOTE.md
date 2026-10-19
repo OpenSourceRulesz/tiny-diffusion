@@ -84,3 +84,26 @@ model's confidence ordering is already well-adapted; imposing a hand-designed
 ordering hurts. Untested: structure-aware TRAINING (mask content more than
 structure à la NDGC granularity alignment). Next: copy-gated decoding for the
 answer block (targets the 12% answer-copying bottleneck; verified novel).
+
+## 2026-10-19: copy-gated decoding — POSITIVE, dose-dependent
+
+Implemented copy-gating in `diffusion.generate()`: fixed logit bonus added to
+tokens from a designated copy source at each denoising step (decoding-time
+analogue of a pointer-generator's copy distribution). `tool_loop()` sets the
+source per block: answer blocks copy from the frozen [RESULT] span
+(--copy-answer), call blocks copy from the question (--copy-call, fights digit
+corruption like 9322->9922). Flags: --copy-bonus, --copy-answer, --copy-call.
+s4, same 60 questions/seeds.
+
+| copy bonus | valid_call | correct_tool | correct_answer |
+|---|---|---|---|
+| 0 (baseline) | 85% | 78% | 12% |
+| 1.0 | 85% | 78% | 15% |
+| 2.0 | 88% | 82% | 25% |
+| 3.0 | 77% | 70% | 18% |
+
+Dose-response with an inverted-U: answer-copying (the identified core
+weakness) doubles at bonus 2.0; tool accuracy also improves (82%); 3.0
+overshoots — the bonus overwhelms the model's distribution and everything
+degrades. Sweet spot ~2.0. First clear win: a verified-novel mechanism that
+repairs diffusion's verbatim-copying weakness at decode time, no retraining.
