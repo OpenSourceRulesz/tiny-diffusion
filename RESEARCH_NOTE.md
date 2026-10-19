@@ -64,3 +64,23 @@ content needed 15 tokens -> content spilled into the call region
 not structural commitment. Consistent with NDGC's choice to align granularity
 smoothly rather than freeze explicitly. Next: skeleton-as-priority-bias
 without positional freezing.
+
+## 2026-10-19: structure-biased decoding (soft bonus) — NEGATIVE result
+
+Follow-up to the hard two-phase failure. Soft version: +0.3 confidence bonus
+for structural-predicting positions during the first 8 steps (ordering nudge
+only, no restriction, no freezing). Same 60 questions/seeds, s4.
+
+| decoding | valid_call | correct_tool | correct_answer |
+|---|---|---|---|
+| baseline (any-order) | 85% | 78% | 12% |
+| two-phase (hard) | 68% | 58% | 10% |
+| struct bonus (soft) | 75% | 58% | 7% |
+
+Prior measurement showed the baseline unmasks content first (step 0.02) and
+structure later (step 1.07) — so the soft bonus was a real intervention, not
+redundant. It still hurt exactly as much as the hard version. Conclusion: the
+model's confidence ordering is already well-adapted; imposing a hand-designed
+ordering hurts. Untested: structure-aware TRAINING (mask content more than
+structure à la NDGC granularity alignment). Next: copy-gated decoding for the
+answer block (targets the 12% answer-copying bottleneck; verified novel).
