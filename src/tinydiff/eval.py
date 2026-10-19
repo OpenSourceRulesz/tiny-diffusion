@@ -44,18 +44,26 @@ def main():
     ap.add_argument("--struct-min-conf", type=float, default=0.0,
                     help="min confidence to commit structure in phase 1; "
                          "below it, phase 1 ends early instead of forcing")
+    ap.add_argument("--struct-bonus", type=float, default=0.0,
+                    help="structure-biased decoding: bonus added to selection "
+                         "confidence of structural-predicting positions for "
+                         "the first --struct-bonus-steps steps (ordering nudge "
+                         "only; do not combine with --two-phase)")
+    ap.add_argument("--struct-bonus-steps", type=int, default=8)
     args = ap.parse_args()
 
     model, tok = load_ckpt(args.ckpt)
     items = make_items(args.n, args.seed)
-    struct_ids = default_struct_ids(tok) if args.two_phase else []
+    struct_ids = default_struct_ids(tok) if (args.two_phase or args.struct_bonus) else []
 
     valid = tool_ok = ans_ok = 0
     for i, (q, exp_tool, exp_args, exp_val) in enumerate(items):
         final, transcript = tool_loop(
             model, tok, f"[USER] {q} [ASSIST]", seed=1000 + i,
             phase1_steps=args.phase1_steps if args.two_phase else 0,
-            struct_ids=struct_ids, struct_min_conf=args.struct_min_conf)
+            struct_ids=struct_ids, struct_min_conf=args.struct_min_conf,
+            struct_bonus=args.struct_bonus,
+            struct_bonus_steps=args.struct_bonus_steps)
         calls = [t for role, t in transcript if role == "tool"]
         v = bool(calls) and "unknown" not in calls[0] and "error" not in calls[0]
         t_ok = v and calls[0].split()[0] == exp_tool

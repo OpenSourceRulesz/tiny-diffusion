@@ -45,7 +45,8 @@ def _top_p_filter(logits, top_p):
 @torch.no_grad()
 def generate(model, tok, prompt_ids, gen_len=64, steps=24, temperature=1.0,
              top_p=0.9, seed=0, frames=False, stop_on=None,
-             phase1_steps=0, struct_ids=(), struct_min_conf=0.0, log=None):
+             phase1_steps=0, struct_ids=(), struct_min_conf=0.0, log=None,
+             struct_bonus=0.0, struct_bonus_steps=0):
     """Denoise a response block conditioned on a frozen prompt.
 
     Returns the full id list (prompt + generated). With frames=True, also returns
@@ -62,6 +63,12 @@ def generate(model, tok, prompt_ids, gen_len=64, steps=24, temperature=1.0,
 
     With log set to a list, each unmask event appends (step, position,
     token_id) — leftover argmax fills are logged with step == steps.
+
+    With struct_bonus > 0: structure-biased decoding. For the first
+    struct_bonus_steps iterations, positions whose argmax prediction is a
+    structural token get struct_bonus added to their selection confidence.
+    Pure ordering nudge — sampling stays unrestricted and nothing is frozen
+    ahead of schedule. (Do not combine with phase1_steps.)
     """
     g = torch.Generator().manual_seed(seed)
     device = next(model.parameters()).device
@@ -126,8 +133,14 @@ def generate(model, tok, prompt_ids, gen_len=64, steps=24, temperature=1.0,
                 continue
         # --- phase 2 (or normal): any-order confidence unmasking ---
         n_unmask = max(1, -(-n_active // (steps - i)))  # ceil division
-        conf = conf.masked_fill(~active, -1.0)
-        _, idx = torch.topk(conf, n_unmask)
+        sel_conf = conf.masked_fill(~active, -1.0)
+        if struct_bonus and struct_bonus_steps and i < struct_bonus_steps \
+                and sids is not None:
+            is_struct = torch.zeros_like(active)
+            for sid in struct_set:
+                is_struct |= (pred == sid)
+            sel_conf = sel_conf + struct_bonus * is_struct.float()
+        _, idx = torch.topk(sel_conf, n_unmask)
         for j in idx.tolist():
             tid = int(torch.multinomial(probs[j], 1, generator=g))
             seq[0, j] = tid

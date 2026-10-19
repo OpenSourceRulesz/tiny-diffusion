@@ -33,7 +33,8 @@ def default_struct_ids(tok):
 
 def tool_loop(model, tok, prompt_text, block_len=40, answer_len=16, steps=16,
               max_rounds=5, temperature=0.8, seed=0,
-              phase1_steps=0, struct_ids=None, struct_min_conf=0.0, traces=None):
+              phase1_steps=0, struct_ids=None, struct_min_conf=0.0, traces=None,
+              struct_bonus=0.0, struct_bonus_steps=0):
     """Frozen-block agentic loop.
 
     Each round: freeze everything generated so far (prompt + finished blocks),
@@ -67,7 +68,9 @@ def tool_loop(model, tok, prompt_text, block_len=40, answer_len=16, steps=16,
                            temperature=temperature, seed=seed + r, stop_on=stop_id,
                            phase1_steps=phase1_steps,
                            struct_ids=struct_ids or (),
-                           struct_min_conf=struct_min_conf, log=blog)
+                           struct_min_conf=struct_min_conf, log=blog,
+                           struct_bonus=struct_bonus,
+                           struct_bonus_steps=struct_bonus_steps)
         if traces is not None:
             traces.append(blog)
         new_text = tok.decode(gen_ids[len(seq_ids):])
