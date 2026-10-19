@@ -11,7 +11,7 @@ import argparse
 import random
 
 from .diffusion import generate  # noqa: F401  (kept for API symmetry)
-from .sample import load_ckpt, tool_loop
+from .sample import load_ckpt, tool_loop, default_struct_ids
 from .tools import KB, run_call
 
 
@@ -37,15 +37,25 @@ def main():
     ap.add_argument("--ckpt", default="checkpoints/s2")
     ap.add_argument("--n", type=int, default=60)
     ap.add_argument("--seed", type=int, default=999)
+    ap.add_argument("--two-phase", action="store_true",
+                    help="structure-first decoding: unmask structural tokens "
+                         "first, freeze them, then fill content")
+    ap.add_argument("--phase1-steps", type=int, default=8)
+    ap.add_argument("--struct-min-conf", type=float, default=0.0,
+                    help="min confidence to commit structure in phase 1; "
+                         "below it, phase 1 ends early instead of forcing")
     args = ap.parse_args()
 
     model, tok = load_ckpt(args.ckpt)
     items = make_items(args.n, args.seed)
+    struct_ids = default_struct_ids(tok) if args.two_phase else []
 
     valid = tool_ok = ans_ok = 0
     for i, (q, exp_tool, exp_args, exp_val) in enumerate(items):
         final, transcript = tool_loop(
-            model, tok, f"[USER] {q} [ASSIST]", seed=1000 + i)
+            model, tok, f"[USER] {q} [ASSIST]", seed=1000 + i,
+            phase1_steps=args.phase1_steps if args.two_phase else 0,
+            struct_ids=struct_ids, struct_min_conf=args.struct_min_conf)
         calls = [t for role, t in transcript if role == "tool"]
         v = bool(calls) and "unknown" not in calls[0] and "error" not in calls[0]
         t_ok = v and calls[0].split()[0] == exp_tool

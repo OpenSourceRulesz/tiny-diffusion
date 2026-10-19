@@ -24,8 +24,16 @@ def load_ckpt(path):
     return model, tok
 
 
+def default_struct_ids(tok):
+    """Token ids treated as structural in phase 1 of structure-first decoding:
+    block markup plus the tool-name decision."""
+    names = ["[THINK]", "[/THINK]", "[CALL]", "[/CALL]", "[END]", "calc", "lookup"]
+    return [tok.stoi[n] for n in names if n in tok.stoi]
+
+
 def tool_loop(model, tok, prompt_text, block_len=40, answer_len=16, steps=16,
-              max_rounds=5, temperature=0.8, seed=0):
+              max_rounds=5, temperature=0.8, seed=0,
+              phase1_steps=0, struct_ids=None, struct_min_conf=0.0):
     """Frozen-block agentic loop.
 
     Each round: freeze everything generated so far (prompt + finished blocks),
@@ -52,7 +60,10 @@ def tool_loop(model, tok, prompt_text, block_len=40, answer_len=16, steps=16,
         # stop the block the moment [/CALL] is unmasked: the environment owns
         # [RESULT], so anything the model would hallucinate after [/CALL] is cut.
         gen_ids = generate(model, tok, seq_ids, gen_len=blen, steps=steps,
-                           temperature=temperature, seed=seed + r, stop_on=stop_id)
+                           temperature=temperature, seed=seed + r, stop_on=stop_id,
+                           phase1_steps=phase1_steps,
+                           struct_ids=struct_ids or (),
+                           struct_min_conf=struct_min_conf)
         new_text = tok.decode(gen_ids[len(seq_ids):])
         seq_ids = gen_ids
         transcript.append(("model", new_text))
