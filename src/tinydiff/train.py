@@ -62,8 +62,11 @@ def get_data_and_tokenizer(args):
             ids[i, :len(e)] = torch.tensor(e)
         return ids, tok
     elif args.data in ("tinystories", "mixed"):
-        # mix in tool trajectories so tool markup/words are in vocab
-        tool_texts = make_dataset(n_tool=2000, n_lang=0, seed=args.seed, hi=args.hi)
+        # mix in tool trajectories so tool markup/words are in vocab.
+        # NOTE: the sample params are fixed (not args.hi) so a rebuild
+        # reproduces an earlier checkpoint's first-N ids exactly --
+        # pinned words only ever append after them.
+        tool_texts = make_dataset(n_tool=2000, n_lang=0, seed=0, hi=500)
         if args.tokenizer:
             tok = WordTokenizer.load(args.tokenizer)
         else:
