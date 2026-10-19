@@ -90,10 +90,18 @@ def get_data_and_tokenizer(args):
         print(f"loaded {i} stories -> tensor {tuple(ids.shape)}")
         if args.data == "mixed":
             # interleave tool trajectories (replay keeps the story prior
-            # from being wiped by narrow tool finetuning)
-            tool_ids = get_data_and_tokenizer(
-                argparse.Namespace(**{**vars(args), "data": "synthetic",
-                                       "tokenizer": None}))[0]
+            # from being wiped by narrow tool finetuning).
+            # CRITICAL: encode with the SAME tokenizer as the stories --
+            # ids from any other vocab are word salad in this id space.
+            ft_texts = make_dataset(n_tool=args.n_tool, n_lang=args.n_lang,
+                                    seed=args.seed, hi=args.hi)
+            enc = [tok.encode(t)[:args.max_len] for t in ft_texts]
+            max_t = max(len(e) for e in enc)
+            tool_ids = torch.full((len(enc), max_t), tok.pad_id,
+                                  dtype=torch.long)
+            for j, e in enumerate(enc):
+                tool_ids[j, :len(e)] = torch.tensor(e)
+            del ft_texts, enc
             pad = args.max_len - tool_ids.shape[1]
             if pad > 0:
                 tool_ids = torch.cat(

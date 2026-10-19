@@ -58,18 +58,19 @@ TOOLS = {"calc": calc, "lookup": lookup}
 
 
 def kb_words():
-    """Every wordpiece the KB needs, so a vocab build can pin them.
+    """Every wordpiece the tool data needs, as it appears in text.
 
     Country/fact names are rare in story text and get crowded out of a
     frequency-built vocab (the model then sees [UNK] and can't even read
-    the question). Pinning guarantees them a slot.
+    the question). Pinning guarantees them a slot. Pieces are taken from
+    real generated trajectories so punctuation-attached forms ("japan.")
+    are covered too -- "japan" != "japan." to this tokenizer.
     """
     from .tokenizer import _pieces, SPECIALS
+    from .data import make_dataset
     words = set()
-    for k, v in KB.items():
-        words.update(_pieces(k))
-        words.update(_pieces(v))
-    words.update(["calc", "lookup"])
+    for t in make_dataset(n_tool=2000, n_lang=2000, seed=0):
+        words.update(_pieces(t))
     return sorted(w for w in words if w not in SPECIALS)
 
 
