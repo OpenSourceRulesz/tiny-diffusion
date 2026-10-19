@@ -45,7 +45,7 @@ def _top_p_filter(logits, top_p):
 @torch.no_grad()
 def generate(model, tok, prompt_ids, gen_len=64, steps=24, temperature=1.0,
              top_p=0.9, seed=0, frames=False, stop_on=None,
-             phase1_steps=0, struct_ids=(), struct_min_conf=0.0):
+             phase1_steps=0, struct_ids=(), struct_min_conf=0.0, log=None):
     """Denoise a response block conditioned on a frozen prompt.
 
     Returns the full id list (prompt + generated). With frames=True, also returns
@@ -59,6 +59,9 @@ def generate(model, tok, prompt_ids, gen_len=64, steps=24, temperature=1.0,
     set, then frozen. Remaining steps unmask normally. If struct_min_conf > 0,
     a structural position must also reach that confidence, otherwise phase 1
     ends early instead of forcing structure the model isn't sure about.
+
+    With log set to a list, each unmask event appends (step, position,
+    token_id) — leftover argmax fills are logged with step == steps.
     """
     g = torch.Generator().manual_seed(seed)
     device = next(model.parameters()).device
@@ -115,6 +118,8 @@ def generate(model, tok, prompt_ids, gen_len=64, steps=24, temperature=1.0,
                 picks = torch.multinomial(sp, 1, generator=g).squeeze(-1)
                 for j, k in zip(idx.tolist(), picks.tolist()):
                     seq[0, j] = int(sids[k])
+                    if log is not None:
+                        log.append((i, j, int(sids[k])))
                 seq, frozen, done = _finish_step(idx)
                 if done:
                     break
@@ -124,7 +129,10 @@ def generate(model, tok, prompt_ids, gen_len=64, steps=24, temperature=1.0,
         conf = conf.masked_fill(~active, -1.0)
         _, idx = torch.topk(conf, n_unmask)
         for j in idx.tolist():
-            seq[0, j] = int(torch.multinomial(probs[j], 1, generator=g))
+            tid = int(torch.multinomial(probs[j], 1, generator=g))
+            seq[0, j] = tid
+            if log is not None:
+                log.append((i, j, tid))
         seq, frozen, done = _finish_step(idx)
         if done:
             break
@@ -134,7 +142,11 @@ def generate(model, tok, prompt_ids, gen_len=64, steps=24, temperature=1.0,
     if len(leftover):
         logits = model(seq, pad_mask=(seq == tok.pad_id))[0]
         logits[:, tok.mask_id] = float("-inf")
-        seq[0, leftover] = logits[leftover].argmax(dim=-1)
+        fill = logits[leftover].argmax(dim=-1)
+        seq[0, leftover] = fill
+        if log is not None:
+            for j, tid in zip(leftover.tolist(), fill.tolist()):
+                log.append((steps, j, int(tid)))
         if frames:
             snapshots.append(tok.decode(seq[0].tolist()))
 

@@ -33,7 +33,7 @@ def default_struct_ids(tok):
 
 def tool_loop(model, tok, prompt_text, block_len=40, answer_len=16, steps=16,
               max_rounds=5, temperature=0.8, seed=0,
-              phase1_steps=0, struct_ids=None, struct_min_conf=0.0):
+              phase1_steps=0, struct_ids=None, struct_min_conf=0.0, traces=None):
     """Frozen-block agentic loop.
 
     Each round: freeze everything generated so far (prompt + finished blocks),
@@ -41,6 +41,9 @@ def tool_loop(model, tok, prompt_text, block_len=40, answer_len=16, steps=16,
     [CALL]...[/CALL], execute it for real, freeze the [RESULT], and continue.
     The model never re-generates finished blocks — the diffusion-native answer
     to KV caching.
+
+    With traces set to a list, each round appends its block's unmask log:
+    a list of (step, position, token_id) events.
     """
     seq_ids = tok.encode(prompt_text)
     call_stop = tok.stoi["[/CALL]"]
@@ -59,11 +62,14 @@ def tool_loop(model, tok, prompt_text, block_len=40, answer_len=16, steps=16,
             break
         # stop the block the moment [/CALL] is unmasked: the environment owns
         # [RESULT], so anything the model would hallucinate after [/CALL] is cut.
+        blog = [] if traces is not None else None
         gen_ids = generate(model, tok, seq_ids, gen_len=blen, steps=steps,
                            temperature=temperature, seed=seed + r, stop_on=stop_id,
                            phase1_steps=phase1_steps,
                            struct_ids=struct_ids or (),
-                           struct_min_conf=struct_min_conf)
+                           struct_min_conf=struct_min_conf, log=blog)
+        if traces is not None:
+            traces.append(blog)
         new_text = tok.decode(gen_ids[len(seq_ids):])
         seq_ids = gen_ids
         transcript.append(("model", new_text))
