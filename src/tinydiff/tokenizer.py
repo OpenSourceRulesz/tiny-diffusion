@@ -63,7 +63,7 @@ class WordTokenizer:
         return len(self.itos)
 
     @classmethod
-    def build(cls, texts, vocab_size=4000, min_freq=2):
+    def build(cls, texts, vocab_size=4000, min_freq=2, pinned=()):
         counter = Counter()
         for t in texts:
             for piece in _pieces(t):
@@ -78,6 +78,13 @@ class WordTokenizer:
             vocab.append(word)
             if len(vocab) >= vocab_size:
                 break
+        # pinned words (e.g. KB terms) are appended verbatim after the
+        # frequency-built vocab, so existing ids never shift
+        seen = set(vocab)
+        for w in pinned:
+            if w not in seen and w not in SPECIALS:
+                vocab.append(w)
+                seen.add(w)
         stoi = {w: i for i, w in enumerate(vocab)}
         return cls(stoi, vocab)
 

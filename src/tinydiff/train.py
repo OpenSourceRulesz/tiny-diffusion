@@ -13,6 +13,7 @@ from .data import make_dataset
 from .diffusion import diffusion_loss
 from .model import TinyDiffusionLM
 from .tokenizer import WordTokenizer
+from .tools import kb_words
 
 
 def iter_stories(path, max_stories=None):
@@ -43,20 +44,24 @@ def count_stories(path):
 
 
 def get_data_and_tokenizer(args):
+    pinned = kb_words() if args.pin_kb else []
+    if pinned:
+        print(f"pinning {len(pinned)} KB words into vocab")
     if args.data == "synthetic":
         texts = make_dataset(n_tool=args.n_tool, n_lang=args.n_lang,
                              seed=args.seed, hi=args.hi)
         if args.tokenizer:
             tok = WordTokenizer.load(args.tokenizer)
         else:
-            tok = WordTokenizer.build(texts, vocab_size=args.vocab_size)
+            tok = WordTokenizer.build(texts, vocab_size=args.vocab_size,
+                                      pinned=pinned)
         encoded = [tok.encode(t)[:args.max_len] for t in texts]
         max_t = max(len(e) for e in encoded)
         ids = torch.full((len(encoded), max_t), tok.pad_id, dtype=torch.long)
         for i, e in enumerate(encoded):
             ids[i, :len(e)] = torch.tensor(e)
         return ids, tok
-    elif args.data == "tinystories":
+    elif args.data in ("tinystories", "mixed"):
         # mix in tool trajectories so tool markup/words are in vocab
         tool_texts = make_dataset(n_tool=2000, n_lang=0, seed=args.seed, hi=args.hi)
         if args.tokenizer:
@@ -66,18 +71,40 @@ def get_data_and_tokenizer(args):
                                            args.vocab_stories))
             print(f"building vocab from {len(sample)} stories...")
             tok = WordTokenizer.build(sample + tool_texts,
-                                      vocab_size=args.vocab_size)
+                                      vocab_size=args.vocab_size, pinned=pinned)
             del sample
-        n = args.max_stories or count_stories(args.data_path)
+        if args.data == "tinystories":
+            n = args.max_stories or count_stories(args.data_path)
+            story_iter = iter_stories(args.data_path, args.max_stories)
+        else:
+            n = args.mix_stories
+            story_iter = iter_stories(args.data_path, args.mix_stories)
         ids = torch.full((n, args.max_len), tok.pad_id, dtype=torch.long)
         i = 0
-        for s in iter_stories(args.data_path, args.max_stories):
+        for s in story_iter:
             if i >= n:
                 break
             e = tok.encode(s)[:args.max_len]
             ids[i, :len(e)] = torch.tensor(e)
             i += 1
         print(f"loaded {i} stories -> tensor {tuple(ids.shape)}")
+        if args.data == "mixed":
+            # interleave tool trajectories (replay keeps the story prior
+            # from being wiped by narrow tool finetuning)
+            tool_ids = get_data_and_tokenizer(
+                argparse.Namespace(**{**vars(args), "data": "synthetic",
+                                       "tokenizer": None}))[0]
+            pad = args.max_len - tool_ids.shape[1]
+            if pad > 0:
+                tool_ids = torch.cat(
+                    [tool_ids,
+                     torch.full((tool_ids.shape[0], pad), tok.pad_id,
+                                dtype=torch.long)], dim=1)
+            ids = torch.cat([ids, tool_ids], dim=0)
+            perm = torch.randperm(ids.shape[0])
+            ids = ids[perm]
+            print(f"mixed tensor {tuple(ids.shape)} "
+                  f"({i} stories + {tool_ids.shape[0]} tool)")
         return ids, tok
     else:
         raise ValueError(args.data)
@@ -106,9 +133,14 @@ def main():
                     help="checkpoint dir to initialize weights from (fresh run, e.g. finetune)")
     ap.add_argument("--tokenizer", default=None,
                     help="tokenizer.json to use instead of building one")
-    ap.add_argument("--data", default="synthetic", choices=["synthetic", "tinystories"])
+    ap.add_argument("--data", default="synthetic",
+                    choices=["synthetic", "tinystories", "mixed"])
     ap.add_argument("--data-path", default="data/TinyStories-valid.txt")
     ap.add_argument("--max-stories", type=int, default=None)
+    ap.add_argument("--mix-stories", type=int, default=2000,
+                    help="stories interleaved with tool data for --data mixed")
+    ap.add_argument("--pin-kb", action="store_true",
+                    help="pin KB words into vocab (appended, ids never shift)")
     ap.add_argument("--vocab-stories", type=int, default=200000,
                     help="stories used for vocab build (streamed, not all)")
     ap.add_argument("--vocab-size", type=int, default=4000)
@@ -137,7 +169,21 @@ def main():
     elif args.init_ckpt:
         ckpt = torch.load(f"{args.init_ckpt}/model.pt", map_location="cpu",
                           weights_only=False)
-        model.load_state_dict(ckpt["state_dict"])
+        sd = ckpt["state_dict"]
+        # vocab may have grown (pinned KB words appended after the original
+        # ids); copy the overlapping embedding rows, init the rest fresh.
+        # head.weight is tied to tok_emb.weight, so fix both keys.
+        old_n = sd["tok_emb.weight"].shape[0]
+        new_n = model.tok_emb.weight.shape[0]
+        if old_n != new_n:
+            print(f"growing embeddings {old_n} -> {new_n} "
+                  f"(copying {min(old_n, new_n)} rows)")
+            new_emb = model.tok_emb.weight.data
+            n = min(old_n, new_n)
+            new_emb[:n] = sd["tok_emb.weight"][:n]
+            sd["tok_emb.weight"] = new_emb
+            sd["head.weight"] = new_emb
+        model.load_state_dict(sd)
         print(f"initialized weights from {args.init_ckpt} (fresh run)")
     if args.device == "auto":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
