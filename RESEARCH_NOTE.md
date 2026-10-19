@@ -42,3 +42,25 @@ Eval: 60 fresh questions, unseen numbers (100–9999), unseen phrasings. `correc
 ## Next
 
 Mixed-data finetune (stories + tool trajectories interleaved) and/or lower learning rate, to reduce interference between the story prior and the tool format. Architecture research first — see `docs/` (forthcoming).
+
+## 2026-10-19: structure-first decoding (two-phase unmasking) — NEGATIVE result
+
+Implemented phase-separated decoding in `diffusion.generate()`: phase 1 may
+only unmask positions whose argmax is structural (`[THINK]`, `[/THINK]`,
+`[CALL]`, `[/CALL]`, `[END]`, tool names), sampling restricted to the
+structural set and frozen; phase 2 fills content normally. Flags:
+`--two-phase`, `--phase1-steps`, `--struct-min-conf`. Same 60 questions,
+same seeds as baseline, s4 checkpoint.
+
+| decoding | valid_call | correct_tool | correct_answer |
+|---|---|---|---|
+| baseline (any-order) | 85% | 78% | 12% |
+| two-phase (8 struct steps) | 68% | 58% | 10% |
+
+Failure mechanism: freezing structural tokens at absolute positions before
+content lengths are known. E.g. `[/THINK]` committed at position 10, think
+content needed 15 tokens -> content spilled into the call region
+(`calc 14 pound [RESULT] * answer 06`). Positional commitment is the problem,
+not structural commitment. Consistent with NDGC's choice to align granularity
+smoothly rather than freeze explicitly. Next: skeleton-as-priority-bias
+without positional freezing.
